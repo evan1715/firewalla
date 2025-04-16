@@ -416,8 +416,11 @@ module.exports = class HostManager extends Monitorable {
       _hosts.push(this.hosts.all[i].toJson());
     }
     json.hosts = _hosts;
-    if (platform.isFireRouterManaged())
+    if (platform.isFireRouterManaged()) {
       await this.enrichSTAInfo(_hosts);
+      await this.enrichApInfo(_hosts);
+    }
+
     // Reduce json size of init response
     if (!options.includeScanResults) {
       return _hosts
@@ -439,6 +442,30 @@ module.exports = class HostManager extends Monitorable {
         const mac = host.mac;
         if (mac && staStatus[mac])
           host.staInfo = staStatus[mac];
+      }
+    }
+  }
+
+  async enrichApInfo(hosts) {
+    const apStatus = await fwapc.getAssetsStatus().catch((err) => {
+      log.error(`Failed to get ap status from fwapc`, err.message);
+      return null;
+    });
+
+    await this._enrichApInfo(hosts, apStatus);
+  }
+
+  async _enrichApInfo(hosts, apStatus) {
+    if (_.isObject(apStatus)) {
+      for (const host of hosts) {
+        const mac = host.mac;
+        if (mac && apStatus[mac]) {
+          // override ip4 to br-lan0
+          const asset = apStatus[mac];
+          if (asset && asset.addrs && asset.addrs["br-lan0"] && asset.addrs["br-lan0"].ip4) {
+            host.ip = asset.addrs["br-lan0"].ip4;
+          }
+        }
       }
     }
   }
@@ -513,20 +540,16 @@ module.exports = class HostManager extends Monitorable {
     const { granularities, hits} = statSettings;
     const stats = {}
     if (!metrics) { // default (full) metrics
-      metrics = [ 'upload', 'download', 'conn', 'dns', 'ntp' ]
-      if (fc.isFeatureOn(Constants.FEATURE_AUDIT_LOG)) {
-        metrics.push('ipB', 'dnsB')
-      }
-      if (fc.isFeatureOn(Constants.FEATURE_LOCAL_AUDIT_LOG)) {
-        metrics.push('ipB:lo:intra', )
+      metrics = [ 'upload', 'download', 'conn', 'ntp' ]
+      if (platform.isDNSFlowSupported()) metrics.push('dns')
+      if (platform.isAuditLogSupported()) {
+        metrics.push('ipB', 'dnsB', 'ipB:lo:intra')
         if (target && target != '0.0.0.0') // remove irrelevant matrics from init
-          metrics.push('ipB:lo:in', 'conn:lo:out')
+          metrics.push('ipB:lo:in', 'ipB:lo:out')
       }
-      if (fc.isFeatureOn(Constants.FEATURE_LOCAL_FLOW)) {
-        metrics.push('intra:lo', 'conn:lo:intra')
-        if (target && target != '0.0.0.0') // remove irrelevant matrics from init
-          metrics.push('upload:lo', 'download:lo', 'conn:lo:in', 'conn:lo:out')
-      }
+      metrics.push('intra:lo', 'conn:lo:intra')
+      if (target && target != '0.0.0.0') // remove irrelevant matrics from init
+        metrics.push('upload:lo', 'download:lo', 'conn:lo:in', 'conn:lo:out')
     }
     for (const metric of metrics) {
       const s = await getHitsAsync(metric + subKey, granularities, hits)
@@ -546,12 +569,18 @@ module.exports = class HostManager extends Monitorable {
     return this.generateStats(stats);
   }
 
-  async newLast24StatsForInit(json, target, metrics) {
+  async newLast24StatsForInit(json, target, metrics, options) {
     json.newLast24 = await this.getStats({granularities: '1hour', hits: 24}, target, metrics);
+    if (options.legacyLocalBlock) {
+      this.mergeStats(json.newLast24);
+    }
   }
 
-  async last12MonthsStatsForInit(json, target, metrics) {
+  async last12MonthsStatsForInit(json, target, metrics, options) {
     json.last12Months = await this.getStats({granularities: '1month', hits: 12}, target, metrics);
+    if (options.legacyLocalBlock) {
+      this.mergeStats(json.last12Months);
+    }
   }
 
   async monthlyDataUsageForInit(json) {
@@ -630,12 +659,18 @@ module.exports = class HostManager extends Monitorable {
     return offset;
   }
 
-  async last60MinStatsForInit(json, target, metrics) {
+  async last60MinStatsForInit(json, target, metrics, options) {
     json.last60 = await this.getStats({granularities: '1minute', hits: 61}, target, metrics);
+    if (options.legacyLocalBlock) {
+      this.mergeStats(json.last60);
+    }
   }
 
-  async last30daysStatsForInit(json, target, metrics) {
+  async last30daysStatsForInit(json, target, metrics, options) {
     json.last30 = await this.getStats({granularities: '1day', hits: 30}, target, metrics);
+    if (options.legacyLocalBlock) {
+      this.mergeStats(json.last30);
+    }
   }
 
   async policyDataForInit(json) {
@@ -1266,6 +1301,7 @@ module.exports = class HostManager extends Monitorable {
       if(mm && mm.length > 0) {
         const names = await rclient.hgetallAsync("sys:ept:memberNames")
         const lastVisits = await rclient.hgetallAsync("sys:ept:member:lastvisit")
+        const history = await rclient.hgetallAsync("sys:ept:members:history")
 
         if(names) {
           mm.forEach((m) => {
@@ -1277,6 +1313,36 @@ module.exports = class HostManager extends Monitorable {
           mm.forEach((m) => {
             m.lastVisit = m.eid && lastVisits[m.eid]
           })
+        }
+
+        if (history) {
+          mm.forEach((m) => {
+            const hStr = m.eid && history[m.eid];
+            if (!hStr)
+              return;
+            // {\"deviceName\":\"iPhone 16 Pro 18.0\",\"msg\":\"paired at 1727166695,unpaired at 1728560998;paired at 1729947426,\"}
+            try {
+              const h = JSON.parse(hStr);
+              const msg = h.msg;
+              if (msg) {
+                const pairs = msg.split(';');
+                let lastPairTs = 0;
+                for (const pair of pairs) {
+                  const records = pair.split(',');
+                  for (const record of records) {
+                    if (record.startsWith("paired"))
+                      lastPairTs = record.split(" ")[2];
+                    if (record.startsWith("unpaired"))
+                      lastPairTs = 0;
+                  }
+                }
+                if (lastPairTs && !isNaN(lastPairTs))
+                  m.lastPairTs = lastPairTs;
+              }
+            } catch (err) {
+              log.error(`Failed to find lastPairTs of ${m.eid}`, err);
+            }
+          });
         }
 
         json.eMembers = mm
@@ -1455,14 +1521,14 @@ module.exports = class HostManager extends Monitorable {
 
     let requiredPromises = [
       this.hostsInfoForInit(json, options),
-      this.newLast24StatsForInit(json),
-      this.last60MinStatsForInit(json),
+      this.newLast24StatsForInit(json, null, options.tsMetrics, options),
+      this.last60MinStatsForInit(json, null, options.tsMetrics, options),
       this.extensionDataForInit(json),
       this.dohConfigDataForInit(json),
       this.unboundConfigDataForInit(json),
       this.safeSearchConfigDataForInit(json),
-      this.last30daysStatsForInit(json),
-      this.last12MonthsStatsForInit(json),
+      this.last30daysStatsForInit(json, null, options.tsMetrics, options),
+      this.last12MonthsStatsForInit(json, null, options.tsMetrics, options),
       this.policyDataForInit(json),
       this.modeForInit(json),
       this.policyRulesForInit(json),
@@ -1490,7 +1556,6 @@ module.exports = class HostManager extends Monitorable {
       this.identitiesForInit(json),
       this.tagsForInit(json, options.timeUsageApps, options.includeAppTimeSlots, options.includeAppTimeIntervals),
       this.btMacForInit(json),
-      this.loadStats(json),
       this.vpnClientProfilesForInit(json),
       this.ruleGroupsForInit(json),
       this.virtWanGroupsForInit(json),
@@ -1509,6 +1574,9 @@ module.exports = class HostManager extends Monitorable {
       this.appConfsForInit(json),
       exec("sudo systemctl is-active firekick").then(() => json.isBindingOpen = 1).catch(() => json.isBindingOpen = 0),
     ];
+
+    if (options.legacySystemFlows)
+      requiredPromises.push(this.loadStats(json))
 
     for (const i in requiredPromises) {
       requiredPromises[i] = (async() => {
@@ -2427,6 +2495,26 @@ module.exports = class HostManager extends Monitorable {
       result['total' + metric[0].toUpperCase() + metric.slice(1) ] = _.sumBy(stats[metric], 1)
     }
     return result
+  }
+
+  mergeStats(stats) {
+    if (!stats.ipB) return
+
+    const tsMap = {}
+    for (const metric of ['ipB', 'ipB:lo:intra', 'ipB:lo:in', 'ipB:lo:out']) {
+      if (stats[metric]) {
+        stats[metric].forEach(([ts, v]) => {
+          tsMap[ts] = (tsMap[ts] || 0) + v
+        })
+        const totalKey = 'total' + metric[0].toUpperCase() + metric.slice(1)
+        if (metric != 'ipB') {
+          stats.totalIpB += stats[totalKey]
+          delete stats[metric]
+          delete stats[totalKey]
+        }
+      }
+    }
+    stats.ipB = Object.entries(tsMap).map(([ts, v]) => [Number(ts), v]).sort(([a], [b]) => a - b)
   }
 
   // Deprecating, MSP no longer needs this after 2.7.0

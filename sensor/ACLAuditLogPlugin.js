@@ -336,7 +336,8 @@ class ACLAuditLogPlugin extends Sensor {
     if (tls)
       record.tls = 1;
 
-    if ((dir === "L" || dir === "O" || dir === "I") && mark) {
+    // redirected traffic with PBR has interface id in mark
+    if (mark && dir != 'W' && record.ac != "redirect") {
       record.pid = Number(mark) & 0xffff;
     }
     if (record.ac === "route") {
@@ -696,8 +697,8 @@ class ACLAuditLogPlugin extends Sensor {
   }
 
   _getAuditKey(record, block) {
-    const { mac, dir } = record
-    return `audit:${dir=='L'?'local:':''}${block?'drop':'accept'}:${mac}`
+    const { mac, type, dir } = record
+    return `audit:${dir=='L'?'local:':''}${block?'drop':type=='dns'?'dns':'accept'}:${mac}`
   }
 
   async writeLogs() {
