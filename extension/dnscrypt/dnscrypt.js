@@ -1,3 +1,5 @@
+'use strict';
+
 /*    Copyright 2019-2023 Firewalla Inc.
  *
  *    This program is free software: you can redistribute it and/or  modify
@@ -13,33 +15,33 @@
  *    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-'use strict';
-
-let instance = null;
-
-const log = require('../../net2/logger')(__filename);
-
+//Core Node.js APIs
 const fs = require('fs');
+const { exec } = require('child-process-promise');
 const util = require('util');
-const existsAsync = util.promisify(fs.exists);
+//External dependencies
+const PromiseBB = require('bluebird');
+//Local files
+const log = require('../../net2/logger')(__filename);
 const f = require('../../net2/Firewalla.js');
+const bone = require("../../lib/Bone");
+const rclient = require('../../util/redis_manager').getRedisClient();
 const { fileRemove } = require('../../util/util.js')
 
-const Promise = require('bluebird');
-Promise.promisifyAll(fs);
+//apply promisify to fs
+PromiseBB.promisifyAll(fs);
 
-const rclient = require('../../util/redis_manager').getRedisClient();
-
+//file constant variables
+const existsAsync = util.promisify(fs.exists);
+/** @example "[\"cloudflare\"]" */
+const serverKey = "ext.dnscrypt.servers"; // selected servers list
+/** @example "[{\"name\":\"cloudflare\",\"stamp\":\"sdns://cf\"}]" */
+const allServerKey = "ext.dnscrypt.allServers";
+/** @example "[{\"name\":\"my dns\",\"stamp\":\"sdns://mdns\",\"url\":\"https://my-dns.com/firewalla\"}]" */
+const customizedServerkey = "ext.dnscrypt.customizedServers"
 const templatePath = `${f.getFirewallaHome()}/extension/dnscrypt/dnscrypt.template.toml`;
 const runtimePath = `${f.getRuntimeInfoFolder()}/dnscrypt.toml`;
-
-const exec = require('child-process-promise').exec;
-
-const serverKey = "ext.dnscrypt.servers"; // selected servers list
-const allServerKey = "ext.dnscrypt.allServers";
-const customizedServerkey = "ext.dnscrypt.customizedServers"
-
-const bone = require("../../lib/Bone");
+let instance = null;
 
 class DNSCrypt {
   constructor() {
