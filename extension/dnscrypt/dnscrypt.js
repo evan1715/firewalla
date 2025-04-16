@@ -46,6 +46,8 @@ const allServerKey = "ext.dnscrypt.allServers";
 const customizedServerkey = "ext.dnscrypt.customizedServers"
 const configTemplatePath = `${f.getFirewallaHome()}/extension/dnscrypt/dnscrypt.template.toml`;
 const configRuntimePath = `${f.getRuntimeInfoFolder()}/dnscrypt.toml`;
+const defaultFallback = "1.1.1.1";
+const defaultLocalPort = 8854;
 let instance = null;
 
 class DNSCrypt {
@@ -66,7 +68,7 @@ class DNSCrypt {
    * @returns {number} 
    */
   getLocalPort() {
-    return this.config.localPort || 8854;
+    return this.config.localPort || defaultLocalPort;
   }
 
   /** 
@@ -75,15 +77,15 @@ class DNSCrypt {
    * @returns {string} 
    */
   getLocalServer() {
-    return `127.0.0.1#${this.config.localPort || 8854}`;
+    return `127.0.0.1#${this.config.localPort || defaultLocalPort}`;
   }
 
   async prepareConfig(config = {}, reCheckConfig = false) {
     this.config = config;
     let content = await fs.readFileAsync(configTemplatePath, { encoding: 'utf8' });
-    content = content.replace("%DNSCRYPT_FALLBACK_DNS%", config.fallbackDNS || "1.1.1.1");
-    content = content.replace("%DNSCRYPT_LOCAL_PORT%", config.localPort || 8854);
-    content = content.replace("%DNSCRYPT_LOCAL_PORT%", config.localPort || 8854);
+    content = content.replace("%DNSCRYPT_FALLBACK_DNS%", config.fallbackDNS || defaultFallback);
+    content = content.replace("%DNSCRYPT_LOCAL_PORT%", config.localPort || defaultLocalPort);
+    content = content.replace("%DNSCRYPT_LOCAL_PORT%", config.localPort || defaultLocalPort);
     content = content.replace("%DNSCRYPT_IPV6%", "false");
 
     const allServers = [].concat(await this.getAllServersFromCloud(), await this.getCustomizedServers()); // get servers from cloud and customized
@@ -130,7 +132,6 @@ class DNSCrypt {
     return await exec("sudo systemctl start dnscrypt");
   }
 
-
   /**
    * Restart the dnscrypt service.
    * If the task has passed the restart time, it be cleared.
@@ -167,6 +168,13 @@ class DNSCrypt {
     return this.getDefaultAllServers().map(x => x.name);
   }
 
+  /**
+   * Get the servers from redis.
+   * If redis doesn't have it, it will return the default servers.
+   * @returns {Promise<string[]>}
+   * @example ['cloudflare', 'google', 'quad9']
+   * @see {@link getDefaultServers} if redis doesn't have it
+   */
   async getServers() {
     const serversString = await rclient.getAsync(serverKey);
     if (!serversString) {
