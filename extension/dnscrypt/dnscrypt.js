@@ -121,7 +121,7 @@ class DNSCrypt {
       if (!s || !s.name || !s.stamp) {
         return null;
       }
-      return `[static.'${s.name}']\n  stamp = '${s.stamp}'\n`;
+      return `  [static.'${s.name}']\n    stamp = '${s.stamp}'\n`;
     }).filter(Boolean).join("\n");
   }
 
