@@ -176,14 +176,15 @@ class DNSCrypt {
    * @see {@link getDefaultServers} if redis doesn't have it
    */
   async getServers() {
-    const serversString = await rclient.getAsync(serverKey);
-    if (!serversString) {
-      return this.getDefaultServers();
-    }
-
     try {
-      const servers = JSON.parse(serversString);
-      return servers;
+      /** @type {string|null|undefined} */
+      const serversString = await rclient.getAsync(serverKey);
+
+      if (!serversString) {
+        throw new Error('No servers found in db.');
+      }
+
+      return JSON.parse(serversString);
     } catch (err) {
       log.error("Failed to parse servers, err:", err);
       return this.getDefaultServers();
@@ -293,10 +294,9 @@ class DNSCrypt {
    * @example [{ name: 'my dns', stamp: 'sdns://mdns', url: 'https://my-dns.com/firewalla' }]
    */
   async getCustomizedServers() {
-    /** @type {string} */
-    const serversString = await rclient.getAsync(customizedServerkey);
-
     try {
+      /** @type {string} */
+      const serversString = await rclient.getAsync(customizedServerkey);
       /** @type {DNSCryptServerListWithUrl[]} */
       const servers = JSON.parse(serversString) || [];
       return servers;
